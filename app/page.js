@@ -1,6 +1,3 @@
-'use client'
-// Paste the entire dashboard component code here
-// (The React component I created earlier)
 import React, { useState, useRef } from 'react';
 import { 
   Upload, 
@@ -165,7 +162,12 @@ export default function FacebookAutoPostDashboard() {
                 <CheckCircle className="h-5 w-5" />
                 <span className="text-sm font-medium">n8n Connected</span>
               </div>
-              <button className="p-2 text-gray-400 hover:text-gray-600">
+              <button 
+                onClick={() => {
+                  alert('Settings panel will open here! (Add your n8n configuration settings)');
+                }}
+                className="p-2 text-gray-400 hover:text-gray-600 transition-colors"
+              >
                 <Settings className="h-5 w-5" />
               </button>
             </div>
@@ -267,7 +269,14 @@ export default function FacebookAutoPostDashboard() {
           <div className="space-y-6">
             <div className="flex justify-between items-center">
               <h2 className="text-xl font-semibold text-gray-900">Generated Posts</h2>
-              <button className="flex items-center space-x-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700">
+              <button 
+                onClick={() => {
+                  // Simulate refresh - in real app, this would call your n8n webhook
+                  setGeneratedPosts(prev => [...prev]);
+                  alert('Posts refreshed! (Connect to n8n for real data)');
+                }}
+                className="flex items-center space-x-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
+              >
                 <RefreshCw className="h-4 w-4" />
                 <span>Refresh</span>
               </button>
@@ -464,7 +473,12 @@ export default function FacebookAutoPostDashboard() {
                   </div>
                   <div className="flex items-center space-x-2">
                     <span className="px-2 py-1 bg-green-100 text-green-800 text-xs font-medium rounded-full">Active</span>
-                    <button className="p-2 text-gray-400 hover:text-gray-600">
+                    <button 
+                      onClick={() => {
+                        alert('Service settings will open here! Configure your automation workflows.');
+                      }}
+                      className="p-2 text-gray-400 hover:text-gray-600 transition-colors"
+                    >
                       <Settings className="h-4 w-4" />
                     </button>
                   </div>
