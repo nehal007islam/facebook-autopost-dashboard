@@ -1,56 +1,72 @@
+// app/api/n8n-proxy/route.js
+
+const allowedEndpoints = [
+  "get-posts",
+  "create-post",
+  "upload-image",
+  "upload-image-data"
+];
+
+function extractEndpoint(url) {
+  const parts = url.split("/");
+  return parts[parts.length - 1]; // e.g., "upload-image"
+}
+
+function validateEndpoint(endpoint) {
+  return allowedEndpoints.includes(endpoint);
+}
+
+async function forwardToN8N(method, endpoint, body = null) {
+  const N8N_BASE = "https://sharifulautomationforiansensory.gen/webhook-test";
+  const N8N_URL = `${N8N_BASE}/${endpoint}`;
+
+  const response = await fetch(N8N_URL, {
+    method,
+    headers: {
+      "Content-Type": "application/json",
+      "Accept": "application/json",
+      "Origin": "https://facebook-autopost-dashboard.vercel.app",
+      "User-Agent": "Vercel-Proxy/1.0"
+    },
+    body: body ? JSON.stringify(body) : undefined,
+  });
+
+  const data = await response.json();
+
+  return new Response(JSON.stringify(data), {
+    status: response.status,
+    headers: {
+      "Content-Type": "application/json",
+      "Access-Control-Allow-Origin": "*",
+      "Access-Control-Allow-Methods": "POST, GET, OPTIONS",
+      "Access-Control-Allow-Headers": "Content-Type, Accept, Origin",
+    },
+  });
+}
+
 export async function POST(req) {
-  try {
-    const { pathname } = new URL(req.url, `http://${req.headers.host}`);
-    const endpoint = pathname.split("/").pop(); // e.g., "upload-image"
-
-    // Construct dynamic webhook URL
-    const N8N_BASE = "https://sharifulautomationforiansensory.gen/webhook-test";
-    const N8N_URL = `${N8N_BASE}/${endpoint}`;
-
-    const body = await req.json();
-
-    console.log("Forwarding to:", N8N_URL);
-    console.log("Request body:", body);
-
-    const response = await fetch(N8N_URL, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "Accept": "application/json",
-        "Origin": "https://facebook-autopost-dashboard.vercel.app",
-        "User-Agent": "Vercel-Proxy/1.0"
-      },
-      body: JSON.stringify(body),
+  const endpoint = extractEndpoint(req.url);
+  if (!validateEndpoint(endpoint)) {
+    return new Response(JSON.stringify({ error: "Invalid endpoint", endpoint }), {
+      status: 400,
+      headers: { "Content-Type": "application/json" },
     });
-
-    const data = await response.json();
-
-    return new Response(JSON.stringify(data), {
-      status: response.status,
-      headers: {
-        "Content-Type": "application/json",
-        "Access-Control-Allow-Origin": "*",
-        "Access-Control-Allow-Methods": "POST, GET, OPTIONS",
-        "Access-Control-Allow-Headers": "Content-Type, Accept, Origin",
-      },
-    });
-  } catch (error) {
-    console.error("Proxy error:", error);
-    return new Response(
-      JSON.stringify({
-        error: "Proxy failed",
-        details: error.message,
-        timestamp: new Date().toISOString()
-      }),
-      {
-        status: 500,
-        headers: {
-          "Content-Type": "application/json",
-          "Access-Control-Allow-Origin": "*",
-        }
-      }
-    );
   }
+
+  const body = await req.json();
+  return await forwardToN8N("POST", endpoint, body);
+}
+
+export async function GET(req) {
+  const endpoint = extractEndpoint(req.url);
+  if (!validateEndpoint(endpoint)) {
+    return new Response(JSON.stringify({ error: "Invalid endpoint", endpoint }), {
+      status: 400,
+      headers: { "Content-Type": "application/json" },
+    });
+  }
+
+  return await forwardToN8N("GET", endpoint);
 }
 
 export async function OPTIONS() {
@@ -64,4 +80,5 @@ export async function OPTIONS() {
     },
   });
 }
+
 
