@@ -32,6 +32,9 @@ export default function FacebookAutoPostDashboard() {
   const [editingPost, setEditingPost] = useState(null);
   const [editedContent, setEditedContent] = useState('');
   const [editedPrice, setEditedPrice] = useState('');
+  const [showSettings, setShowSettings] = useState(false);
+  const [n8nWebhookUrl, setN8nWebhookUrl] = useState('https://your-n8n-instance.com/webhook');
+  const [isRefreshing, setIsRefreshing] = useState(false);
   const [generatedPosts, setGeneratedPosts] = useState([
     {
       id: 1,
@@ -90,6 +93,28 @@ export default function FacebookAutoPostDashboard() {
     }, 1000);
   };
 
+  const refreshPosts = async () => {
+    setIsRefreshing(true);
+    try {
+      // Replace this URL with your actual n8n webhook URL
+      const response = await fetch(`${n8nWebhookUrl}/get-posts`);
+      
+      if (response.ok) {
+        const newPosts = await response.json();
+        setGeneratedPosts(newPosts);
+        alert('Posts refreshed successfully!');
+      } else {
+        // For demo purpose, just simulate refresh
+        alert('Posts refreshed! (Demo mode - connect your n8n webhook)');
+      }
+    } catch (error) {
+      console.error('Failed to refresh posts:', error);
+      alert('Posts refreshed! (Demo mode - connect your n8n webhook)');
+    } finally {
+      setIsRefreshing(false);
+    }
+  };
+
   const handleApproval = (postId, approved) => {
     setGeneratedPosts(prev => 
       prev.map(post => 
@@ -98,6 +123,25 @@ export default function FacebookAutoPostDashboard() {
           : post
       )
     );
+    
+    // Send to n8n webhook
+    if (approved) {
+      sendToN8n('approve-post', { postId, action: 'approve' });
+    } else {
+      sendToN8n('reject-post', { postId, action: 'reject' });
+    }
+  };
+
+  const sendToN8n = async (endpoint, data) => {
+    try {
+      await fetch(`${n8nWebhookUrl}/${endpoint}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(data)
+      });
+    } catch (error) {
+      console.error('n8n webhook error:', error);
+    }
   };
 
   const startEditing = (post) => {
@@ -163,10 +207,8 @@ export default function FacebookAutoPostDashboard() {
                 <span className="text-sm font-medium">n8n Connected</span>
               </div>
               <button 
-                onClick={() => {
-                  alert('Settings panel will open here! (Add your n8n configuration settings)');
-                }}
-                className="p-2 text-gray-400 hover:text-gray-600 transition-colors"
+                onClick={() => setShowSettings(true)}
+                className="p-2 text-gray-400 hover:text-gray-600 transition-colors hover:bg-gray-100 rounded-lg"
               >
                 <Settings className="h-5 w-5" />
               </button>
@@ -270,15 +312,16 @@ export default function FacebookAutoPostDashboard() {
             <div className="flex justify-between items-center">
               <h2 className="text-xl font-semibold text-gray-900">Generated Posts</h2>
               <button 
-                onClick={() => {
-                  // Simulate refresh - in real app, this would call your n8n webhook
-                  setGeneratedPosts(prev => [...prev]);
-                  alert('Posts refreshed! (Connect to n8n for real data)');
-                }}
-                className="flex items-center space-x-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
+                onClick={refreshPosts}
+                disabled={isRefreshing}
+                className={`flex items-center space-x-2 px-4 py-2 rounded-lg transition-colors ${
+                  isRefreshing 
+                    ? 'bg-gray-400 cursor-not-allowed' 
+                    : 'bg-blue-600 hover:bg-blue-700'
+                } text-white`}
               >
-                <RefreshCw className="h-4 w-4" />
-                <span>Refresh</span>
+                <RefreshCw className={`h-4 w-4 ${isRefreshing ? 'animate-spin' : ''}`} />
+                <span>{isRefreshing ? 'Refreshing...' : 'Refresh'}</span>
               </button>
             </div>
 
@@ -526,6 +569,67 @@ export default function FacebookAutoPostDashboard() {
           </div>
         )}
       </div>
+
+      {/* Settings Modal */}
+      {showSettings && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+          <div className="bg-white rounded-xl shadow-2xl p-6 w-full max-w-md mx-4">
+            <div className="flex justify-between items-center mb-6">
+              <h3 className="text-xl font-semibold text-gray-900">n8n Configuration</h3>
+              <button 
+                onClick={() => setShowSettings(false)}
+                className="p-2 text-gray-400 hover:text-gray-600 rounded-lg hover:bg-gray-100"
+              >
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+            
+            <div className="space-y-4">
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-2">
+                  n8n Webhook URL
+                </label>
+                <input
+                  type="url"
+                  value={n8nWebhookUrl}
+                  onChange={(e) => setN8nWebhookUrl(e.target.value)}
+                  className="w-full p-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                  placeholder="https://your-n8n-instance.com/webhook"
+                />
+                <p className="text-xs text-gray-500 mt-1">Enter your n8n webhook base URL</p>
+              </div>
+
+              <div className="pt-4 border-t">
+                <h4 className="font-medium text-gray-900 mb-2">Webhook Endpoints:</h4>
+                <div className="text-sm text-gray-600 space-y-1">
+                  <p>• <code className="bg-gray-100 px-1 rounded">GET /get-posts</code> - Fetch posts</p>
+                  <p>• <code className="bg-gray-100 px-1 rounded">POST /approve-post</code> - Approve post</p>
+                  <p>• <code className="bg-gray-100 px-1 rounded">POST /reject-post</code> - Reject post</p>
+                  <p>• <code className="bg-gray-100 px-1 rounded">POST /upload-image</code> - Upload image</p>
+                </div>
+              </div>
+
+              <div className="flex space-x-3 pt-4">
+                <button
+                  onClick={() => {
+                    alert('n8n configuration saved!');
+                    setShowSettings(false);
+                  }}
+                  className="flex-1 bg-blue-600 text-white py-2 px-4 rounded-lg hover:bg-blue-700 transition-colors"
+                >
+                  Save Settings
+                </button>
+                <button
+                  onClick={() => setShowSettings(false)}
+                  className="flex-1 bg-gray-600 text-white py-2 px-4 rounded-lg hover:bg-gray-700 transition-colors"
+                >
+                  Cancel
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
