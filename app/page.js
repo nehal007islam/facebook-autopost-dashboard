@@ -2,21 +2,20 @@
 
 // Paste the ENTIRE dashboard code here
 // (Copy all the React component code from the artifact)
-
-import React, { useState, useRef } from 'react';
-import { 
-  Upload, 
-  Image, 
-  Eye, 
-  ThumbsUp, 
-  ThumbsDown, 
-  Send, 
-  BarChart3, 
-  Settings, 
-  Facebook, 
-  TrendingUp, 
-  Clock, 
-  CheckCircle, 
+import React, { useEffect, useState, useRef } from 'react';
+import {
+  Upload,
+  Image,
+  Eye,
+  ThumbsUp,
+  ThumbsDown,
+  Send,
+  BarChart3,
+  Settings,
+  Facebook,
+  TrendingUp,
+  Clock,
+  CheckCircle,
   XCircle,
   RefreshCw,
   Users,
@@ -31,6 +30,14 @@ import {
   X
 } from 'lucide-react';
 
+// FacebookAutoPostDashboard.jsx
+// - Saves webhook URL to localStorage
+// - Tests & pings n8n webhook regularly to show reliable connection status
+// - Uploads images to n8n via POST /upload-image (FormData)
+// - Fetches posts from GET /get-posts
+// - Approve/reject send POST to /approve-post and /reject-post
+// - Graceful error handling and user feedback
+
 export default function FacebookAutoPostDashboard() {
   const [activeTab, setActiveTab] = useState('upload');
   const [uploadedImage, setUploadedImage] = useState(null);
@@ -38,134 +45,222 @@ export default function FacebookAutoPostDashboard() {
   const [editedContent, setEditedContent] = useState('');
   const [editedPrice, setEditedPrice] = useState('');
   const [showSettings, setShowSettings] = useState(false);
-  const [n8nWebhookUrl, setN8nWebhookUrl] = useState('https://your-n8n-instance.com/webhook');
+  const [n8nWebhookUrl, setN8nWebhookUrl] = useState(() => {
+    try {
+      return localStorage.getItem('n8nWebhookUrl') || 'https://your-n8n-instance.com/webhook';
+    } catch (e) {
+      return 'https://your-n8n-instance.com/webhook';
+    }
+  });
+
   const [isRefreshing, setIsRefreshing] = useState(false);
-  const [generatedPosts, setGeneratedPosts] = useState([
-    {
-      id: 1,
-      product: 'Wireless Headphones',
-      image: '/api/placeholder/300/300',
-      content: '🎧 Discover premium sound quality with our latest wireless headphones! ✨ Features noise cancellation, 30-hour battery life, and crystal-clear audio. Perfect for music lovers and professionals alike. #TechDeals #Headphones #WirelessAudio',
-      competitorPrice: '$89.99',
-      suggestedPrice: '$79.99',
-      status: 'pending',
-      engagement: { likes: 0, comments: 0, shares: 0 },
-      createdAt: '2 minutes ago'
-    },
-    {
-      id: 2,
-      product: 'Smart Watch',
-      image: '/api/placeholder/300/300',
-      content: '⌚ Stay connected and healthy with our advanced smartwatch! Track your fitness, receive notifications, and monitor your health 24/7. Water-resistant design with 7-day battery life. #SmartWatch #Fitness #Technology',
-      competitorPrice: '$249.99',
-      suggestedPrice: '$199.99',
-      status: 'approved',
-      engagement: { likes: 23, comments: 5, shares: 8 },
-      createdAt: '1 hour ago'
-    }
-  ]);
-  
+  const [generatedPosts, setGeneratedPosts] = useState([]);
+  const [connection, setConnection] = useState({ status: 'unknown', lastChecked: null, info: '' });
+  const [uploading, setUploading] = useState(false);
+  const [toast, setToast] = useState(null);
+
   const fileInputRef = useRef(null);
+  const pingIntervalRef = useRef(null);
 
-  const handleImageUpload = (event) => {
-    const file = event.target.files[0];
-    if (file) {
-      const reader = new FileReader();
-      reader.onload = (e) => {
-        setUploadedImage(e.target.result);
-        // Here you would typically send to n8n webhook
-        simulateProcessing();
-      };
-      reader.readAsDataURL(file);
+  // helper: show small toast
+  const showToast = (message, ms = 3000) => {
+    setToast(message);
+    setTimeout(() => setToast(null), ms);
+  };
+
+  // persist webhook URL to localStorage
+  useEffect(() => {
+    try {
+      localStorage.setItem('n8nWebhookUrl', n8nWebhookUrl);
+    } catch (e) {
+      console.error('Unable to save webhook URL to localStorage', e);
     }
-  };
+  }, [n8nWebhookUrl]);
 
-  const simulateProcessing = () => {
-    // Simulate the n8n workflow processing
-    setTimeout(() => {
-      const newPost = {
-        id: Date.now(),
-        product: 'New Product',
-        image: uploadedImage,
-        content: 'AI-generated post content will appear here after processing...',
-        competitorPrice: 'Analyzing...',
-        suggestedPrice: 'Calculating...',
-        status: 'processing',
-        engagement: { likes: 0, comments: 0, shares: 0 },
-        createdAt: 'Just now'
-      };
-      setGeneratedPosts(prev => [newPost, ...prev]);
-    }, 1000);
-  };
+  // ping n8n periodically
+  useEffect(() => {
+    const ping = async () => {
+      if (!n8nWebhookUrl) {
+        setConnection({ status: 'disconnected', lastChecked: new Date(), info: 'No URL set' });
+        return;
+      }
 
-  const refreshPosts = async () => {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 4000);
+
+      try {
+        // Many n8n setups won't expose a dedicated ping endpoint. We'll try GET /health first, then fallback to GET /get-posts
+        const attempts = [`${n8nWebhookUrl.replace(/\/$/, '')}/health`, `${n8nWebhookUrl.replace(/\/$/, '')}/get-posts`];
+        let ok = false;
+        let info = '';
+
+        for (const url of attempts) {
+          try {
+            const res = await fetch(url, { method: 'GET', signal: controller.signal });
+            if (res.ok) {
+              ok = true;
+              info = `OK (${new URL(url).pathname})`;
+              break;
+            } else {
+              info = `HTTP ${res.status} from ${new URL(url).pathname}`;
+            }
+          } catch (err) {
+            // continue to next attempt
+            info = err.name === 'AbortError' ? 'timeout' : String(err.message);
+          }
+        }
+
+        clearTimeout(timeout);
+        setConnection({ status: ok ? 'connected' : 'disconnected', lastChecked: new Date(), info });
+      } catch (error) {
+        clearTimeout(timeout);
+        setConnection({ status: 'disconnected', lastChecked: new Date(), info: String(error.message) });
+      }
+    };
+
+    // run immediately
+    ping();
+    // then every 10 seconds
+    pingIntervalRef.current = setInterval(ping, 10000);
+
+    return () => {
+      if (pingIntervalRef.current) clearInterval(pingIntervalRef.current);
+    };
+  }, [n8nWebhookUrl]);
+
+  // initial load of posts
+  useEffect(() => {
+    fetchPosts();
+  }, []);
+
+  const fetchPosts = async () => {
     setIsRefreshing(true);
     try {
-      // Replace this URL with your actual n8n webhook URL
-      const response = await fetch(`${n8nWebhookUrl}/get-posts`);
-      
-      if (response.ok) {
-        const newPosts = await response.json();
-        setGeneratedPosts(newPosts);
-        alert('Posts refreshed successfully!');
-      } else {
-        // For demo purpose, just simulate refresh
-        alert('Posts refreshed! (Demo mode - connect your n8n webhook)');
-      }
+      const url = `${n8nWebhookUrl.replace(/\/$/, '')}/get-posts`;
+      const res = await fetch(url, { method: 'GET' });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      // Expect data to be an array. If not, keep sample fallback.
+      if (Array.isArray(data)) setGeneratedPosts(data);
+      else showToast('Unexpected response shape from /get-posts. Check n8n workflow.');
+      showToast('Posts refreshed successfully!');
     } catch (error) {
-      console.error('Failed to refresh posts:', error);
-      alert('Posts refreshed! (Demo mode - connect your n8n webhook)');
+      console.warn('fetchPosts failed', error);
+      showToast('Unable to fetch posts from n8n. Running in demo mode.');
+      // demo fallback (keep previous posts or show example)
+      if (generatedPosts.length === 0) {
+        setGeneratedPosts([
+          {
+            id: 1,
+            product: 'Wireless Headphones',
+            image: '/api/placeholder/300/300',
+            content: '🎧 Demo: premium sound wireless headphones. Connect your n8n to see real posts.',
+            competitorPrice: '$89.99',
+            suggestedPrice: '$79.99',
+            status: 'pending',
+            engagement: { likes: 0, comments: 0, shares: 0 },
+            createdAt: 'Demo'
+          }
+        ]);
+      }
     } finally {
       setIsRefreshing(false);
     }
   };
 
-  const handleApproval = (postId, approved) => {
-    setGeneratedPosts(prev => 
-      prev.map(post => 
-        post.id === postId 
-          ? { ...post, status: approved ? 'approved' : 'rejected' }
-          : post
-      )
-    );
-    
-    // Send to n8n webhook
-    if (approved) {
-      sendToN8n('approve-post', { postId, action: 'approve' });
-    } else {
-      sendToN8n('reject-post', { postId, action: 'reject' });
+  const handleImageUpload = async (event) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+
+    const reader = new FileReader();
+    reader.onload = (e) => setUploadedImage(e.target.result);
+    reader.readAsDataURL(file);
+
+    // send to n8n
+    await uploadImageToN8n(file);
+  };
+
+  const uploadImageToN8n = async (file) => {
+    if (!n8nWebhookUrl) {
+      showToast('Set your n8n webhook URL in Settings first');
+      return;
+    }
+
+    setUploading(true);
+    try {
+      const endpoint = `${n8nWebhookUrl.replace(/\/$/, '')}/upload-image`;
+      const form = new FormData();
+      form.append('file', file);
+      // you can append metadata if you want
+      form.append('source', 'facebook-dashboard');
+
+      const res = await fetch(endpoint, { method: 'POST', body: form });
+      if (!res.ok) throw new Error(`Upload failed: HTTP ${res.status}`);
+
+      const body = await res.json();
+      // Expect the webhook to respond with a post object or a status
+      // If it returns new post(s), merge them
+      if (body && Array.isArray(body)) {
+        setGeneratedPosts(prev => [...body, ...prev]);
+      } else if (body && body.id) {
+        setGeneratedPosts(prev => [body, ...prev]);
+      } else {
+        showToast('Image uploaded — check your n8n workflow for results');
+      }
+    } catch (error) {
+      console.error('uploadImageToN8n error', error);
+      showToast('Failed to upload image to n8n. Check webhook URL and CORS.');
+    } finally {
+      setUploading(false);
     }
   };
 
-  const sendToN8n = async (endpoint, data) => {
+  const refreshPosts = async () => {
+    await fetchPosts();
+  };
+
+  const sendToN8n = async (endpointPath, data) => {
     try {
-      await fetch(`${n8nWebhookUrl}/${endpoint}`, {
+      const endpoint = `${n8nWebhookUrl.replace(/\/$/, '')}/${endpointPath}`;
+      const res = await fetch(endpoint, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(data)
       });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      return await res.json();
     } catch (error) {
       console.error('n8n webhook error:', error);
+      showToast('Failed to contact n8n endpoint.');
+      throw error;
+    }
+  };
+
+  const handleApproval = async (postId, approved) => {
+    setGeneratedPosts(prev => prev.map(post => post.id === postId ? { ...post, status: approved ? 'approved' : 'rejected' } : post));
+    try {
+      await sendToN8n(approved ? 'approve-post' : 'reject-post', { postId, action: approved ? 'approve' : 'reject' });
+      showToast(approved ? 'Post approved and sent to n8n' : 'Post rejected and sent to n8n');
+    } catch (e) {
+      // keep local state but inform user
+      showToast('Failed to notify n8n about approval');
     }
   };
 
   const startEditing = (post) => {
     setEditingPost(post.id);
-    setEditedContent(post.content);
-    setEditedPrice(post.suggestedPrice);
+    setEditedContent(post.content || '');
+    setEditedPrice(post.suggestedPrice || '');
   };
 
   const saveEdits = (postId) => {
-    setGeneratedPosts(prev => 
-      prev.map(post => 
-        post.id === postId 
-          ? { ...post, content: editedContent, suggestedPrice: editedPrice }
-          : post
-      )
-    );
+    setGeneratedPosts(prev => prev.map(post => post.id === postId ? { ...post, content: editedContent, suggestedPrice: editedPrice } : post));
+    // Optionally notify n8n about edits
+    sendToN8n('edit-post', { postId, content: editedContent, suggestedPrice: editedPrice }).catch(() => {});
     setEditingPost(null);
     setEditedContent('');
     setEditedPrice('');
+    showToast('Edits saved locally (and sent to n8n if available)');
   };
 
   const cancelEditing = () => {
@@ -174,21 +269,33 @@ export default function FacebookAutoPostDashboard() {
     setEditedPrice('');
   };
 
+  const testConnectionNow = async () => {
+    setConnection(prev => ({ ...prev, info: 'testing...' }));
+    // ping effect already runs; but run an explicit quick fetch
+    try {
+      const res = await fetch(`${n8nWebhookUrl.replace(/\/$/, '')}/get-posts`);
+      if (res.ok) {
+        setConnection({ status: 'connected', lastChecked: new Date(), info: 'GET /get-posts OK' });
+        showToast('Connection OK');
+        fetchPosts();
+      } else {
+        setConnection({ status: 'disconnected', lastChecked: new Date(), info: `GET /get-posts ${res.status}` });
+        showToast('Connection failed');
+      }
+    } catch (err) {
+      setConnection({ status: 'disconnected', lastChecked: new Date(), info: String(err.message) });
+      showToast('Connection error — check URL and CORS');
+    }
+  };
+
   const getStatusColor = (status) => {
-    switch(status) {
+    switch (status) {
       case 'pending': return 'bg-yellow-100 text-yellow-800';
       case 'approved': return 'bg-green-100 text-green-800';
       case 'rejected': return 'bg-red-100 text-red-800';
       case 'processing': return 'bg-blue-100 text-blue-800';
       default: return 'bg-gray-100 text-gray-800';
     }
-  };
-
-  const analyticsData = {
-    totalPosts: 156,
-    approvalRate: 89,
-    avgEngagement: 12.4,
-    revenue: 2450
   };
 
   return (
@@ -198,7 +305,7 @@ export default function FacebookAutoPostDashboard() {
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
           <div className="flex justify-between items-center py-4">
             <div className="flex items-center space-x-3">
-              <div className="p-2 bg-blue-600 rounded-lg">
+              <div className={`p-2 rounded-lg ${connection.status === 'connected' ? 'bg-green-600' : 'bg-gray-400'}`}>
                 <Facebook className="h-6 w-6 text-white" />
               </div>
               <div>
@@ -206,12 +313,16 @@ export default function FacebookAutoPostDashboard() {
                 <p className="text-sm text-gray-500">Intelligent Social Media Automation</p>
               </div>
             </div>
+
             <div className="flex items-center space-x-4">
-              <div className="flex items-center space-x-2 text-green-600">
-                <CheckCircle className="h-5 w-5" />
-                <span className="text-sm font-medium">n8n Connected</span>
+              <div className="flex items-center space-x-2">
+                <div className={`px-3 py-1 rounded-full text-xs font-medium ${connection.status === 'connected' ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'}`}>
+                  {connection.status === 'connected' ? 'n8n Connected' : connection.status === 'disconnected' ? 'n8n Disconnected' : 'n8n Unknown'}
+                </div>
+                <div className="text-xs text-gray-500">{connection.lastChecked ? new Date(connection.lastChecked).toLocaleTimeString() : ''}</div>
               </div>
-              <button 
+
+              <button
                 onClick={() => setShowSettings(true)}
                 className="p-2 text-gray-400 hover:text-gray-600 transition-colors hover:bg-gray-100 rounded-lg"
               >
@@ -251,8 +362,8 @@ export default function FacebookAutoPostDashboard() {
           <div className="space-y-6">
             <div className="bg-white rounded-xl shadow-lg p-8">
               <h2 className="text-xl font-semibold text-gray-900 mb-6">Upload Product Image</h2>
-              
-              <div 
+
+              <div
                 className="border-2 border-dashed border-gray-300 rounded-xl p-12 text-center hover:border-blue-400 transition-colors cursor-pointer"
                 onClick={() => fileInputRef.current?.click()}
               >
@@ -274,7 +385,7 @@ export default function FacebookAutoPostDashboard() {
                   </div>
                 )}
               </div>
-              
+
               <input
                 ref={fileInputRef}
                 type="file"
@@ -282,6 +393,25 @@ export default function FacebookAutoPostDashboard() {
                 onChange={handleImageUpload}
                 className="hidden"
               />
+
+              <div className="mt-4">
+                <button
+                  onClick={() => fileInputRef.current?.click()}
+                  className="px-4 py-2 bg-blue-600 text-white rounded-lg mr-2"
+                >
+                  Choose image
+                </button>
+                <button
+                  onClick={() => {
+                    setUploadedImage(null);
+                    fileInputRef.current.value = null;
+                  }}
+                  className="px-4 py-2 bg-gray-200 rounded-lg"
+                >
+                  Clear
+                </button>
+                {uploading && <span className="ml-3 text-sm text-gray-500">Uploading...</span>}
+              </div>
             </div>
 
             {/* Workflow Status */}
@@ -316,18 +446,27 @@ export default function FacebookAutoPostDashboard() {
           <div className="space-y-6">
             <div className="flex justify-between items-center">
               <h2 className="text-xl font-semibold text-gray-900">Generated Posts</h2>
-              <button 
-                onClick={refreshPosts}
-                disabled={isRefreshing}
-                className={`flex items-center space-x-2 px-4 py-2 rounded-lg transition-colors ${
-                  isRefreshing 
-                    ? 'bg-gray-400 cursor-not-allowed' 
-                    : 'bg-blue-600 hover:bg-blue-700'
-                } text-white`}
-              >
-                <RefreshCw className={`h-4 w-4 ${isRefreshing ? 'animate-spin' : ''}`} />
-                <span>{isRefreshing ? 'Refreshing...' : 'Refresh'}</span>
-              </button>
+              <div className="flex items-center space-x-2">
+                <button
+                  onClick={refreshPosts}
+                  disabled={isRefreshing}
+                  className={`flex items-center space-x-2 px-4 py-2 rounded-lg transition-colors ${
+                    isRefreshing
+                      ? 'bg-gray-400 cursor-not-allowed'
+                      : 'bg-blue-600 hover:bg-blue-700'
+                  } text-white`}
+                >
+                  <RefreshCw className={`h-4 w-4 ${isRefreshing ? 'animate-spin' : ''}`} />
+                  <span>{isRefreshing ? 'Refreshing...' : 'Refresh'}</span>
+                </button>
+
+                <button
+                  onClick={testConnectionNow}
+                  className="px-3 py-2 bg-gray-100 rounded-lg border"
+                >
+                  Test Connection
+                </button>
+              </div>
             </div>
 
             <div className="grid gap-6">
@@ -400,15 +539,15 @@ export default function FacebookAutoPostDashboard() {
                       <div className="flex space-x-6 text-sm text-gray-500">
                         <div className="flex items-center space-x-1">
                           <Heart className="h-4 w-4" />
-                          <span>{post.engagement.likes}</span>
+                          <span>{post.engagement?.likes ?? 0}</span>
                         </div>
                         <div className="flex items-center space-x-1">
                           <MessageCircle className="h-4 w-4" />
-                          <span>{post.engagement.comments}</span>
+                          <span>{post.engagement?.comments ?? 0}</span>
                         </div>
                         <div className="flex items-center space-x-1">
                           <Share2 className="h-4 w-4" />
-                          <span>{post.engagement.shares}</span>
+                          <span>{post.engagement?.shares ?? 0}</span>
                         </div>
                       </div>
 
@@ -462,14 +601,12 @@ export default function FacebookAutoPostDashboard() {
         {activeTab === 'analytics' && (
           <div className="space-y-6">
             <h2 className="text-xl font-semibold text-gray-900">Analytics Overview</h2>
-            
-            {/* Stats Cards */}
             <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
               {[
-                { label: 'Total Posts', value: analyticsData.totalPosts, icon: Send, color: 'blue' },
-                { label: 'Approval Rate', value: `${analyticsData.approvalRate}%`, icon: ThumbsUp, color: 'green' },
-                { label: 'Avg Engagement', value: analyticsData.avgEngagement, icon: TrendingUp, color: 'purple' },
-                { label: 'Revenue Impact', value: `$${analyticsData.revenue}`, icon: DollarSign, color: 'yellow' }
+                { label: 'Total Posts', value: generatedPosts.length || 0, icon: Send, color: 'blue' },
+                { label: 'Approval Rate', value: `${Math.round((generatedPosts.filter(p => p.status === 'approved').length / Math.max(generatedPosts.length,1)) * 100) || 0}%`, icon: ThumbsUp, color: 'green' },
+                { label: 'Avg Engagement', value: (generatedPosts.reduce((s,p)=>s + (p.engagement?.likes||0) + (p.engagement?.comments||0) + (p.engagement?.shares||0),0) / Math.max(generatedPosts.length,1)).toFixed(1), icon: TrendingUp, color: 'purple' },
+                { label: 'Revenue Impact', value: `$${generatedPosts.reduce((s,p)=>s + (parseFloat(String(p.suggestedPrice||'').replace(/[^0-9.-]+/g,'')) || 0),0).toFixed(0)}`, icon: DollarSign, color: 'yellow' }
               ].map(({ label, value, icon: Icon, color }, index) => (
                 <div key={index} className="bg-white rounded-xl shadow-lg p-6">
                   <div className="flex items-center justify-between">
@@ -506,7 +643,6 @@ export default function FacebookAutoPostDashboard() {
         {activeTab === 'services' && (
           <div className="space-y-6">
             <h2 className="text-xl font-semibold text-gray-900">Service Management</h2>
-            
             <div className="grid gap-6">
               <div className="bg-white rounded-xl shadow-lg p-6">
                 <div className="flex items-center justify-between mb-4">
@@ -521,9 +657,9 @@ export default function FacebookAutoPostDashboard() {
                   </div>
                   <div className="flex items-center space-x-2">
                     <span className="px-2 py-1 bg-green-100 text-green-800 text-xs font-medium rounded-full">Active</span>
-                    <button 
+                    <button
                       onClick={() => {
-                        alert('Service settings will open here! Configure your automation workflows.');
+                        setShowSettings(true);
                       }}
                       className="p-2 text-gray-400 hover:text-gray-600 transition-colors"
                     >
@@ -531,15 +667,15 @@ export default function FacebookAutoPostDashboard() {
                     </button>
                   </div>
                 </div>
-                
+
                 <div className="space-y-3 text-sm text-gray-600">
                   <div className="flex justify-between">
                     <span>Posts Generated Today:</span>
-                    <span className="font-medium">12</span>
+                    <span className="font-medium">{generatedPosts.length}</span>
                   </div>
                   <div className="flex justify-between">
                     <span>Success Rate:</span>
-                    <span className="font-medium text-green-600">94%</span>
+                    <span className="font-medium text-green-600">{Math.round((generatedPosts.filter(p => p.status === 'approved').length / Math.max(generatedPosts.length,1)) * 100) || 0}%</span>
                   </div>
                   <div className="flex justify-between">
                     <span>Next Scheduled:</span>
@@ -581,19 +717,17 @@ export default function FacebookAutoPostDashboard() {
           <div className="bg-white rounded-xl shadow-2xl p-6 w-full max-w-md mx-4">
             <div className="flex justify-between items-center mb-6">
               <h3 className="text-xl font-semibold text-gray-900">n8n Configuration</h3>
-              <button 
+              <button
                 onClick={() => setShowSettings(false)}
                 className="p-2 text-gray-400 hover:text-gray-600 rounded-lg hover:bg-gray-100"
               >
                 <X className="h-5 w-5" />
               </button>
             </div>
-            
+
             <div className="space-y-4">
               <div>
-                <label className="block text-sm font-medium text-gray-700 mb-2">
-                  n8n Webhook URL
-                </label>
+                <label className="block text-sm font-medium text-gray-700 mb-2">n8n Webhook URL</label>
                 <input
                   type="url"
                   value={n8nWebhookUrl}
@@ -601,7 +735,7 @@ export default function FacebookAutoPostDashboard() {
                   className="w-full p-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
                   placeholder="https://your-n8n-instance.com/webhook"
                 />
-                <p className="text-xs text-gray-500 mt-1">Enter your n8n webhook base URL</p>
+                <p className="text-xs text-gray-500 mt-1">Enter your n8n webhook base URL (no trailing slash recommended)</p>
               </div>
 
               <div className="pt-4 border-t">
@@ -610,19 +744,21 @@ export default function FacebookAutoPostDashboard() {
                   <p>• <code className="bg-gray-100 px-1 rounded">GET /get-posts</code> - Fetch posts</p>
                   <p>• <code className="bg-gray-100 px-1 rounded">POST /approve-post</code> - Approve post</p>
                   <p>• <code className="bg-gray-100 px-1 rounded">POST /reject-post</code> - Reject post</p>
-                  <p>• <code className="bg-gray-100 px-1 rounded">POST /upload-image</code> - Upload image</p>
+                  <p>• <code className="bg-gray-100 px-1 rounded">POST /upload-image</code> - Upload image (multipart/form-data)</p>
                 </div>
               </div>
 
               <div className="flex space-x-3 pt-4">
                 <button
                   onClick={() => {
-                    alert('n8n configuration saved!');
+                    // save already persisted via useEffect; also test
+                    testConnectionNow();
                     setShowSettings(false);
+                    showToast('Settings saved');
                   }}
                   className="flex-1 bg-blue-600 text-white py-2 px-4 rounded-lg hover:bg-blue-700 transition-colors"
                 >
-                  Save Settings
+                  Save & Test
                 </button>
                 <button
                   onClick={() => setShowSettings(false)}
@@ -632,9 +768,26 @@ export default function FacebookAutoPostDashboard() {
                 </button>
               </div>
             </div>
+
+            <div className="mt-3 text-xs text-gray-500">Note: Make sure your n8n instance allows CORS from your Vercel domain and that endpoints are reachable over HTTPS.</div>
           </div>
         </div>
       )}
+
+      {/* Toast */}
+      {toast && (
+        <div className="fixed right-6 bottom-6 z-50">
+          <div className="bg-gray-900 text-white px-4 py-2 rounded-lg shadow">{toast}</div>
+        </div>
+      )}
+
+      {/* connection debug small panel bottom-left */}
+      <div className="fixed left-6 bottom-6 z-40">
+        <div className={`p-3 rounded-lg shadow-lg ${connection.status === 'connected' ? 'bg-green-50 text-green-800' : 'bg-red-50 text-red-800'}`}>
+          <div className="text-xs font-medium">n8n: {connection.status}</div>
+          <div className="text-xs text-gray-600">{connection.info}</div>
+        </div>
+      </div>
     </div>
   );
 }
