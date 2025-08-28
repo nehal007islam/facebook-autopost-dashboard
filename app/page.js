@@ -1,3 +1,8 @@
+'use client'
+
+// Paste the ENTIRE dashboard code here
+// (Copy all the React component code from the artifact)
+
 import React, { useState, useRef } from 'react';
 import { 
   Upload, 
